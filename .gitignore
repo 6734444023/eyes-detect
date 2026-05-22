@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Large model files (re-downloaded automatically on first run)
+*.pt
+*.task
