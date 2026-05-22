@@ -2,44 +2,98 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import os
+import platform
+import shutil
 import subprocess
+import tempfile
 import urllib.request
+from pathlib import Path
+from threading import Thread
 
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
+try:
+    from playsound import playsound
+except ImportError:
+    playsound = None
+
 SOUND_PATH = os.path.join(os.path.dirname(__file__),
                           "freesound_community-siren-alert-96052.mp3")
 
-alert_proc = None   # single tracked afplay process
+alert_proc = None   # process or thread for alert playback
+
+
+def _playback_with_playsound(path):
+    try:
+        playsound(path)
+    except Exception as exc:
+        print(f"Alert playback failed: {exc}")
 
 
 def play_alert():
     """Start alert sound; kill any already-playing instance first."""
     global alert_proc
     stop_alert()
-    alert_proc = subprocess.Popen(["afplay", SOUND_PATH],
-                                  stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL)
+    system = platform.system()
+
+    if system == "Darwin":
+        alert_proc = subprocess.Popen(["afplay", SOUND_PATH],
+                                      stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)
+    elif system == "Windows":
+        if playsound is None:
+            print("Install the 'playsound' package to enable alert audio on Windows.")
+            return
+        alert_proc = Thread(target=_playback_with_playsound,
+                             args=(SOUND_PATH,),
+                             daemon=True)
+        alert_proc.start()
+    else:
+        alert_proc = subprocess.Popen(["afplay", SOUND_PATH],
+                                      stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)
 
 
 def stop_alert():
     """Stop the alert sound if it is playing."""
     global alert_proc
-    if alert_proc is not None and alert_proc.poll() is None:
-        alert_proc.terminate()
+    if isinstance(alert_proc, subprocess.Popen):
+        if alert_proc.poll() is None:
+            alert_proc.terminate()
     alert_proc = None
 
 # ── Download face landmarker model once (5.8 MB) ──────────────────────────────
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "face_landmarker.task")
-if not os.path.exists(MODEL_PATH):
+MODEL_NAME = "face_landmarker.task"
+PROJECT_MODEL_PATH = Path(__file__).with_name(MODEL_NAME)
+SAFE_MODEL_DIR = Path(tempfile.gettempdir()) / "eyes_detect"
+SAFE_MODEL_PATH = SAFE_MODEL_DIR / MODEL_NAME
+
+
+def download_model(target_path):
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     print("Downloading face landmarker model (~5.8 MB)...")
     urllib.request.urlretrieve(
         "https://storage.googleapis.com/mediapipe-models/"
         "face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-        MODEL_PATH,
+        str(target_path),
     )
     print("Download complete.")
+
+
+if PROJECT_MODEL_PATH.exists():
+    source_model_path = PROJECT_MODEL_PATH
+else:
+    download_model(PROJECT_MODEL_PATH)
+    source_model_path = PROJECT_MODEL_PATH
+
+if not str(source_model_path.parent).isascii():
+    SAFE_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    if not SAFE_MODEL_PATH.exists():
+        shutil.copy2(source_model_path, SAFE_MODEL_PATH)
+    MODEL_PATH = str(SAFE_MODEL_PATH)
+else:
+    MODEL_PATH = str(source_model_path)
 
 # ── Eye landmark indices (MediaPipe 468-point mesh) ───────────────────────────
 # Order per eye: [outer, upper1, upper2, inner, lower2, lower1]
